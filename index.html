@@ -62,22 +62,31 @@
     margin-bottom: 40px;
   }
   .start-btn {
-    padding: 14px 40px;
+    padding: 16px 44px;
     border: 1px solid rgba(255,255,255,0.15);
     border-radius: 40px;
     background: rgba(255,255,255,0.03);
     color: rgba(255,255,255,0.7);
-    font-size: 14px;
+    font-size: 15px;
     cursor: pointer;
     transition: all 0.3s;
-    margin: 6px;
+    margin: 8px;
     backdrop-filter: blur(10px);
+    min-width: 160px;
   }
   .start-btn:hover {
     background: rgba(255,255,255,0.08);
     border-color: rgba(255,255,255,0.3);
     color: white;
     transform: scale(1.05);
+  }
+  @media (max-width: 480px) {
+    .start-btn {
+      padding: 18px 36px;
+      font-size: 16px;
+      min-width: 200px;
+    }
+    #info { font-size: 9px; }
   }
   .btn-group { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
   #info {
@@ -162,7 +171,7 @@
 <div id="mode-indicator"></div>
 <div id="stats"></div>
 <div id="info">
-  click=ripple · move=lens · space=pause · M=source · C=cymatics · ←→ sensitivity · R=reset<br>
+  click=ripple · move=lens · space=pause · M=source · C=cymatics · ←→ sens · +/- vol · R=reset<br>
   built with <a href="https://github.com/chenglou/pretext" target="_blank">pretext</a> + Web Audio API ·
   <a href="https://github.com/2lab-ai/pretext-resonance" target="_blank">source</a>
 </div>
@@ -222,6 +231,11 @@ let highlightDecay = 0
 let cymaticsMode = false
 let mouseIdleTime = 0
 let lastMouseMoveTime = performance.now()
+
+// Energy buildup tracking
+let energyHistory = []
+let buildupIntensity = 0
+let volume = 0.35 // master volume
 
 // Stars
 let stars = []
@@ -672,6 +686,20 @@ function analyzeAudio() {
     beatDetected = false
   }
   prevBass = bass
+
+  // Energy buildup detection
+  energyHistory.push(overall)
+  if (energyHistory.length > 60) energyHistory.shift()
+  if (energyHistory.length >= 30) {
+    const recent = energyHistory.slice(-15).reduce((a, b) => a + b, 0) / 15
+    const earlier = energyHistory.slice(0, 15).reduce((a, b) => a + b, 0) / 15
+    const delta = recent - earlier
+    if (delta > 0.05) {
+      buildupIntensity = Math.min(1, buildupIntensity + delta * 2)
+    } else {
+      buildupIntensity *= 0.95
+    }
+  }
 }
 
 function createBeatRing() {
@@ -843,7 +871,7 @@ function updatePhysics() {
     // Visual
     const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
     p.rotation = Math.atan2(p.vy, p.vx) * Math.min(speed / 10, 0.25)
-    p.scale = 1 + bandValue * 0.4 + (beatDetected ? bass * 0.25 : 0) + p.highlight * 0.3
+    p.scale = 1 + bandValue * 0.4 + (beatDetected ? bass * 0.25 : 0) + p.highlight * 0.3 + buildupIntensity * 0.15
     // Idle breathing opacity so text is readable without audio
     const idleOpacity = 0.5 + Math.sin(p.phase * 0.15 + time * 0.6) * 0.05
     p.opacity = idleOpacity + bandValue * 0.4 + overall * 0.15 + p.highlight * 0.35
@@ -871,9 +899,10 @@ function render() {
 
   // Background
   const bgGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.7)
-  const bgR = Math.floor(6 + smoothBass * 12)
-  const bgG = Math.floor(6 + smoothMid * 4)
-  const bgB = Math.floor(8 + smoothHigh * 14)
+  const buGlow = buildupIntensity * 8
+  const bgR = Math.floor(6 + smoothBass * 12 + buGlow)
+  const bgG = Math.floor(6 + smoothMid * 4 + buGlow * 0.5)
+  const bgB = Math.floor(8 + smoothHigh * 14 + buGlow)
   bgGrad.addColorStop(0, 'rgb(' + bgR + ',' + bgG + ',' + bgB + ')')
   bgGrad.addColorStop(1, '#03030a')
   ctx.fillStyle = bgGrad
@@ -1118,7 +1147,7 @@ function render() {
     fps = Math.round(frameCount / ((now - lastFpsTime) / 1000))
     frameCount = 0
     lastFpsTime = now
-    statsEl.innerHTML = chars.length + ' chars · ' + fps + ' fps<br>beats: ' + beatCount + ' · sens: ' + sensitivity.toFixed(1) + 'x' + (cymaticsMode ? '<br>⬡ CYMATICS' : '')
+    statsEl.innerHTML = chars.length + ' chars · ' + fps + ' fps<br>beats: ' + beatCount + ' · sens: ' + sensitivity.toFixed(1) + 'x · vol: ' + Math.round(volume * 100) + '%' + (buildupIntensity > 0.1 ? '<br>▲ buildup ' + Math.round(buildupIntensity * 100) + '%' : '') + (cymaticsMode ? '<br>⬡ CYMATICS' : '')
   }
 }
 
@@ -1192,6 +1221,19 @@ window.addEventListener('keydown', e => {
   if (e.key === '3') sensitivity = 2.0
   if (e.key === 'c' || e.key === 'C') {
     cymaticsMode = !cymaticsMode
+  }
+  // Volume: + / - keys
+  if (e.key === '=' || e.key === '+') {
+    volume = Math.min(1.0, volume + 0.05)
+    if (musicNodes.length > 0 && musicNodes[0].gain) {
+      musicNodes[0].gain.setTargetAtTime(volume, audioCtx.currentTime, 0.05)
+    }
+  }
+  if (e.key === '-' || e.key === '_') {
+    volume = Math.max(0, volume - 0.05)
+    if (musicNodes.length > 0 && musicNodes[0].gain) {
+      musicNodes[0].gain.setTargetAtTime(volume, audioCtx.currentTime, 0.05)
+    }
   }
 })
 
