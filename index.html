@@ -214,6 +214,10 @@ let beatRings = []
 // Ripples from clicks
 let ripples = []
 
+// Word highlight
+let highlightGroup = -1
+let highlightDecay = 0
+
 // Stars
 let stars = []
 
@@ -272,6 +276,8 @@ function initStars() {
 
 function buildLines() {
   chars = []
+  currentWordGroup = 0
+  lastCharWasStar = false
   ctx.font = font
 
   try {
@@ -326,18 +332,30 @@ function pushLineChars(text, startX, y, idx) {
   return idx
 }
 
+// Track which "word group" each char belongs to (split by ✦)
+let currentWordGroup = 0
+let lastCharWasStar = false
+
 function pushChar(ch, x, y, index) {
   const nRow = y / H
   const nCol = x / W
+  if (ch === '✦') {
+    currentWordGroup++
+    lastCharWasStar = true
+  } else {
+    lastCharWasStar = false
+  }
   chars.push({
     char: ch, baseX: x, baseY: y, x, y,
     vx: 0, vy: 0,
     rotation: 0, scale: 1, opacity: 0.5,
     index: index,
+    wordGroup: currentWordGroup,
     freqBand: nRow < 0.35 ? 'bass' : nRow < 0.68 ? 'mid' : 'high',
     phase: (nCol + nRow * 0.7) * Math.PI * 4,
     hue: 220, sat: 30, light: 60,
     trail: [],
+    highlight: 0, // beat highlight intensity
   })
 }
 
@@ -356,7 +374,19 @@ async function initAudio(mode) {
     try {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       source = audioCtx.createMediaStreamSource(micStream)
-      source.connect(analyser)
+      // Mic gain normalization — boost quiet mics
+      const micGain = audioCtx.createGain()
+      micGain.gain.value = 2.5
+      const compressor = audioCtx.createDynamicsCompressor()
+      compressor.threshold.value = -30
+      compressor.knee.value = 20
+      compressor.ratio.value = 4
+      compressor.attack.value = 0.003
+      compressor.release.value = 0.15
+      source.connect(micGain)
+      micGain.connect(compressor)
+      compressor.connect(analyser)
+      musicNodes.push(micGain, compressor)
       modeEl.textContent = '🎤 MIC'
     } catch(e) {
       await startDemoMusic()
@@ -427,8 +457,14 @@ function startDemoMusic() {
   subLfo.start()
   musicNodes.push(subLfo, subLfoGain)
 
-  // === Warm pad ===
-  const padFreqs = [220, 277.18, 329.63] // Am chord
+  // === Warm pad with chord progression ===
+  const chordProg = [
+    [220, 277.18, 329.63],   // Am
+    [196, 246.94, 329.63],   // Em/G
+    [174.61, 220, 261.63],   // F
+    [196, 246.94, 293.66],   // G
+  ]
+  let chordIdx = 0
   const padGain = audioCtx.createGain()
   const padFilter = audioCtx.createBiquadFilter()
   padGain.gain.value = 0.04
@@ -439,19 +475,40 @@ function startDemoMusic() {
   padGain.connect(master)
   musicNodes.push(padGain, padFilter)
 
-  for (const freq of padFreqs) {
-    const o1 = audioCtx.createOscillator()
-    const o2 = audioCtx.createOscillator()
-    o1.type = 'sawtooth'
-    o2.type = 'sawtooth'
-    o1.frequency.value = freq
-    o2.frequency.value = freq * 1.005 // detune
-    o1.connect(padFilter)
-    o2.connect(padFilter)
-    o1.start()
-    o2.start()
-    musicNodes.push(o1, o2)
+  let padOscs = []
+  function setChord(freqs) {
+    // Fade out old oscillators
+    for (const o of padOscs) {
+      try { o.stop(audioCtx.currentTime + 0.5) } catch(e) {}
+    }
+    padOscs = []
+    for (const freq of freqs) {
+      const o1 = audioCtx.createOscillator()
+      const o2 = audioCtx.createOscillator()
+      o1.type = 'sawtooth'
+      o2.type = 'sawtooth'
+      o1.frequency.value = freq
+      o2.frequency.value = freq * 1.005
+      o1.connect(padFilter)
+      o2.connect(padFilter)
+      o1.start()
+      o2.start()
+      padOscs.push(o1, o2)
+      musicNodes.push(o1, o2)
+    }
   }
+  setChord(chordProg[0])
+
+  // Change chord every 4 bars (4 seconds)
+  const chordInterval = setInterval(() => {
+    if (paused || !audioCtx) return
+    chordIdx = (chordIdx + 1) % chordProg.length
+    setChord(chordProg[chordIdx])
+    // Update sub bass root
+    const roots = [55, 49, 43.65, 49]
+    subOsc.frequency.setTargetAtTime(roots[chordIdx], audioCtx.currentTime, 0.3)
+  }, 4000)
+  musicIntervals.push(chordInterval)
 
   // Pad filter sweep
   const padLfo = audioCtx.createOscillator()
@@ -464,22 +521,21 @@ function startDemoMusic() {
   padLfo.start()
   musicNodes.push(padLfo, padLfoGain)
 
-  // === Arpeggio ===
-  const arpScale = [
-    220, 261.63, 329.63, 392, 440, 523.25, 659.25, 783.99,
-    440, 523.25, 329.63, 392, 261.63, 659.25, 783.99, 880,
-  ]
+  // === Arpeggio (follows chord) ===
   let arpIdx = 0
   const arpInterval = setInterval(() => {
     if (paused || !audioCtx) return
-    const freq = arpScale[arpIdx % arpScale.length]
+    const chord = chordProg[chordIdx]
+    // Build arpeggio from current chord + octave
+    const arpNotes = [...chord, ...chord.map(f => f * 2)]
+    const freq = arpNotes[arpIdx % arpNotes.length]
     arpIdx++
 
     const osc = audioCtx.createOscillator()
     const env = audioCtx.createGain()
     const flt = audioCtx.createBiquadFilter()
     osc.type = arpIdx % 3 === 0 ? 'triangle' : 'sine'
-    osc.frequency.value = freq * (arpIdx % 5 === 0 ? 2 : 1)
+    osc.frequency.value = freq
     flt.type = 'lowpass'
     flt.frequency.value = 1500 + Math.sin(time * 0.5) * 800
 
@@ -603,6 +659,10 @@ function analyzeAudio() {
     beatCount++
     // Create beat ring
     createBeatRing()
+    // Highlight a random word group
+    const maxGroup = currentWordGroup || paragraphs.length
+    highlightGroup = Math.floor(Math.random() * maxGroup)
+    highlightDecay = 1.0
   } else {
     beatDetected = false
   }
@@ -665,14 +725,19 @@ function updatePhysics() {
       bandHue = 230 + smoothHigh * 70
     }
 
+    // === Idle breathing (always alive even without audio) ===
+    const idleAmp = 1.5 * (1 - Math.min(overall * 3, 1)) // fades as audio increases
+    const idleWave = Math.sin(p.phase * 0.3 + time * 0.8) * idleAmp
+    const idleHWave = Math.cos(p.phase * 0.2 + time * 0.5) * idleAmp * 0.4
+
     // === Sound waves ===
     const waveAmp = bandValue * 22 * sensitivity
     const waveSpeed = 2.5 + overall * 5
 
-    const wave = Math.sin(p.phase + time * waveSpeed) * waveAmp
+    const wave = Math.sin(p.phase + time * waveSpeed) * waveAmp + idleWave
     p.vy += (p.baseY + wave - p.y) * 0.14 - p.vy * 0.08
 
-    const hWave = Math.cos(p.phase * 0.6 + time * waveSpeed * 0.5) * waveAmp * 0.25
+    const hWave = Math.cos(p.phase * 0.6 + time * waveSpeed * 0.5) * waveAmp * 0.25 + idleHWave
     p.vx += (p.baseX + hWave - p.x) * 0.11 - p.vx * 0.08
 
     // === Mouse lens effect ===
@@ -738,14 +803,24 @@ function updatePhysics() {
     p.x += p.vx
     p.y += p.vy
 
+    // Word highlight
+    const isHighlighted = (p.wordGroup === highlightGroup && highlightDecay > 0.05)
+    if (isHighlighted) {
+      p.highlight = highlightDecay
+    } else {
+      p.highlight *= 0.9
+    }
+
     // Visual
     const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
     p.rotation = Math.atan2(p.vy, p.vx) * Math.min(speed / 10, 0.25)
-    p.scale = 1 + bandValue * 0.4 + (beatDetected ? bass * 0.25 : 0)
-    p.opacity = 0.35 + bandValue * 0.55 + overall * 0.15
-    p.hue = bandHue
-    p.sat = 35 + bandValue * 55
-    p.light = 50 + bandValue * 30
+    p.scale = 1 + bandValue * 0.4 + (beatDetected ? bass * 0.25 : 0) + p.highlight * 0.3
+    // Idle breathing opacity so text is readable without audio
+    const idleOpacity = 0.5 + Math.sin(p.phase * 0.15 + time * 0.6) * 0.05
+    p.opacity = idleOpacity + bandValue * 0.4 + overall * 0.15 + p.highlight * 0.35
+    p.hue = bandHue + p.highlight * 40
+    p.sat = 35 + bandValue * 55 + p.highlight * 20
+    p.light = 50 + bandValue * 30 + p.highlight * 20
 
     // Trails
     if (speed > 1.8 && chars.length < 1800) {
@@ -756,6 +831,9 @@ function updatePhysics() {
       p.trail = p.trail.filter(t => t.opacity > 0.02)
     }
   }
+
+  // Decay highlight
+  highlightDecay *= 0.96
 }
 
 // ═══════════════ RENDER ═══════════════
@@ -1086,13 +1164,29 @@ window.addEventListener('touchstart', e => {
   lastTap = now
 })
 
+let initialPinchDist = null
 window.addEventListener('touchmove', e => {
   e.preventDefault()
   if (e.touches.length === 1) {
     targetMouseX = e.touches[0].clientX
     targetMouseY = e.touches[0].clientY
   }
+  if (e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX
+    const dy = e.touches[0].clientY - e.touches[1].clientY
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (initialPinchDist !== null) {
+      const scale = dist / initialPinchDist
+      lensRadius = Math.max(80, Math.min(500, lensRadius * scale))
+    }
+    initialPinchDist = dist
+    // Center between fingers
+    targetMouseX = (e.touches[0].clientX + e.touches[1].clientX) / 2
+    targetMouseY = (e.touches[0].clientY + e.touches[1].clientY) / 2
+  }
 }, { passive: false })
+
+window.addEventListener('touchend', () => { initialPinchDist = null })
 
 // ═══════════════ INIT ═══════════════
 let pretextLoaded = false
