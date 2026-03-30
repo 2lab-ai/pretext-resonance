@@ -236,6 +236,7 @@ let lastMouseMoveTime = performance.now()
 let energyHistory = []
 let buildupIntensity = 0
 let volume = 0.35 // master volume
+let dropEffect = 0 // flash when buildup drops suddenly
 
 // Stars
 let stars = []
@@ -697,8 +698,13 @@ function analyzeAudio() {
     if (delta > 0.05) {
       buildupIntensity = Math.min(1, buildupIntensity + delta * 2)
     } else {
+      // Drop detection: was building, now falling
+      if (buildupIntensity > 0.3 && delta < -0.02) {
+        dropEffect = buildupIntensity
+      }
       buildupIntensity *= 0.95
     }
+    dropEffect *= 0.92
   }
 }
 
@@ -897,10 +903,26 @@ function updatePhysics() {
 function render() {
   ctx.clearRect(0, 0, W, H)
 
-  // Background
-  const bgGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.7)
+  // Background base + aurora
+  ctx.fillStyle = '#03030a'
+  ctx.fillRect(0, 0, W, H)
   const buGlow = buildupIntensity * 8
-  const bgR = Math.floor(6 + smoothBass * 12 + buGlow)
+  for (let ai = 0; ai < 3; ai++) {
+    const aPhase = time * 0.06 + ai * 2.1
+    const ax = W * (0.3 + 0.4 * Math.sin(aPhase * 0.7 + ai))
+    const ay = H * (0.25 + 0.35 * Math.cos(aPhase * 0.5 + ai * 1.3))
+    const ar = Math.min(W, H) * (0.2 + overall * 0.12 + buildupIntensity * 0.08)
+    const aGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, ar)
+    const aHues = [280 + smoothBass * 40, 180 + smoothMid * 30, 340 + smoothHigh * 30]
+    const aAlpha = 0.012 + overall * 0.01 + buildupIntensity * 0.006
+    aGrad.addColorStop(0, 'hsla(' + aHues[ai] + ', 55%, 28%, ' + aAlpha + ')')
+    aGrad.addColorStop(0.6, 'hsla(' + (aHues[ai] + 30) + ', 35%, 18%, ' + (aAlpha * 0.3) + ')')
+    aGrad.addColorStop(1, 'transparent')
+    ctx.fillStyle = aGrad
+    ctx.fillRect(0, 0, W, H)
+  }
+  const bgGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.5)
+  const bgR = Math.floor(smoothBass * 15 + buGlow)
   const bgG = Math.floor(6 + smoothMid * 4 + buGlow * 0.5)
   const bgB = Math.floor(8 + smoothHigh * 14 + buGlow)
   bgGrad.addColorStop(0, 'rgb(' + bgR + ',' + bgG + ',' + bgB + ')')
@@ -990,6 +1012,28 @@ function render() {
     ctx.fillRect(0, 0, W, H)
   }
 
+  // Drop effect — expanding flash when buildup releases
+  if (dropEffect > 0.05) {
+    ctx.fillStyle = 'rgba(255, 255, 255, ' + (dropEffect * 0.08) + ')'
+    ctx.fillRect(0, 0, W, H)
+    ctx.beginPath()
+    ctx.arc(W/2, H/2, dropEffect * Math.max(W, H) * 0.4, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255, 220, 150, ' + (dropEffect * 0.15) + ')'
+    ctx.lineWidth = 2 + dropEffect * 3
+    ctx.stroke()
+  }
+
+  // Aurora sweep — subtle color bands that shift with audio
+  if (overall > 0.05) {
+    const auroraHue = (time * 20 + beatCount * 30) % 360
+    const auroraGrad = ctx.createLinearGradient(0, 0, W, H)
+    auroraGrad.addColorStop(0, 'hsla(' + auroraHue + ', 60%, 30%, ' + (overall * 0.02) + ')')
+    auroraGrad.addColorStop(0.5, 'hsla(' + ((auroraHue + 120) % 360) + ', 50%, 25%, ' + (overall * 0.015) + ')')
+    auroraGrad.addColorStop(1, 'hsla(' + ((auroraHue + 240) % 360) + ', 60%, 30%, ' + (overall * 0.02) + ')')
+    ctx.fillStyle = auroraGrad
+    ctx.fillRect(0, 0, W, H)
+  }
+
   // Frequency band zone lines
   if (overall > 0.05) {
     ctx.setLineDash([3, 10])
@@ -1053,14 +1097,23 @@ function render() {
   }
   ctx.globalAlpha = 1
 
-  // Characters
+  // Characters with selective glow
   for (const p of chars) {
     ctx.save()
     ctx.translate(p.x, p.y)
     ctx.rotate(p.rotation)
     ctx.scale(p.scale, p.scale)
+
+    // Glow for highlighted / high-energy chars (perf guarded)
+    const energy = p.highlight + (p.opacity > 0.8 ? (p.opacity - 0.8) * 2 : 0)
+    if (energy > 0.15 && chars.length < 1500) {
+      ctx.shadowColor = 'hsla(' + p.hue + ', 80%, 70%, ' + Math.min(energy * 0.5, 0.6) + ')'
+      ctx.shadowBlur = 6 + energy * 10
+    }
+
     ctx.fillStyle = 'hsla(' + p.hue + ', ' + Math.min(p.sat, 90) + '%, ' + Math.min(p.light, 85) + '%, ' + p.opacity + ')'
     ctx.fillText(p.char, 0, 0)
+    ctx.shadowBlur = 0
     ctx.restore()
   }
 
