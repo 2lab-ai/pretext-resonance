@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RESONANCE — Sound Shapes Text</title>
+
+<!-- OG Meta -->
+<meta property="og:title" content="RESONANCE — Sound Shapes Text">
+<meta property="og:description" content="Your voice and music physically shape text. Every character dances to sound frequencies in real-time. Built with pretext + Web Audio API.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://2lab-ai.github.io/pretext-resonance/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="RESONANCE">
+<meta name="twitter:description" content="Sound shapes text. Every character dances to frequencies.">
+
+<!-- Favicon -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎵</text></svg>">
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #06060c;
+    color: #e0d8cc;
+    font-family: 'Inter', 'Pretendard', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    background: rgba(6, 6, 12, 0.95);
+    transition: opacity 0.8s;
+    cursor: pointer;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  #overlay h1 {
+    font-size: clamp(28px, 5vw, 56px);
+    font-weight: 200;
+    letter-spacing: 0.3em;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, #ff6b6b, #ffa94d, #ffd43b, #69db7c, #4dabf7, #cc5de8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: hueShift 4s ease infinite;
+  }
+  @keyframes hueShift {
+    0%, 100% { filter: hue-rotate(0deg); }
+    50% { filter: hue-rotate(30deg); }
+  }
+  #overlay p {
+    font-size: 14px;
+    color: rgba(255,255,255,0.4);
+    margin-bottom: 40px;
+  }
+  .start-btn {
+    padding: 14px 40px;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 40px;
+    background: rgba(255,255,255,0.03);
+    color: rgba(255,255,255,0.7);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin: 6px;
+    backdrop-filter: blur(10px);
+  }
+  .start-btn:hover {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.3);
+    color: white;
+    transform: scale(1.05);
+  }
+  .btn-group { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  #info {
+    position: fixed;
+    bottom: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: rgba(255,255,255,0.25);
+    z-index: 20;
+    text-align: center;
+    font-family: monospace;
+    pointer-events: auto;
+    line-height: 1.6;
+  }
+  #info a { color: rgba(255,255,255,0.4); text-decoration: none; }
+  #info a:hover { color: rgba(255,255,255,0.7); }
+  #stats {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    font-size: 10px;
+    font-family: monospace;
+    z-index: 20;
+    opacity: 0.25;
+    color: rgba(255,255,255,0.6);
+    text-align: right;
+    line-height: 1.6;
+  }
+  #mode-indicator {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    font-size: 11px;
+    font-family: monospace;
+    z-index: 20;
+    opacity: 0.35;
+    color: rgba(255,255,255,0.6);
+    line-height: 1.6;
+  }
+  #spectrum-bar {
+    position: fixed;
+    bottom: 50px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(90vw, 600px);
+    height: 3px;
+    z-index: 15;
+    opacity: 0.5;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>RESONANCE</h1>
+  <p>sound shapes text</p>
+  <div class="btn-group">
+    <button class="start-btn" id="btn-mic">🎤 Use Microphone</button>
+    <button class="start-btn" id="btn-music">🎵 Play Demo Music</button>
+  </div>
+</div>
+
+<canvas id="c"></canvas>
+<div id="spectrum-bar"></div>
+<div id="mode-indicator"></div>
+<div id="stats"></div>
+<div id="info">
+  space=pause · M=mic/music · ←→ sensitivity · R=reset · 1-3 presets<br>
+  built with <a href="https://github.com/chenglou/pretext" target="_blank">pretext</a> + Web Audio API ·
+  <a href="https://github.com/2lab-ai" target="_blank">2lab.ai</a>
+</div>
+
+<script type="module">
+import { prepareWithSegments, layoutNextLine } from 'https://esm.sh/@chenglou/pretext@0.0.3'
+
+const canvas = document.getElementById('c')
+const ctx = canvas.getContext('2d')
+const overlay = document.getElementById('overlay')
+const statsEl = document.getElementById('stats')
+const modeEl = document.getElementById('mode-indicator')
+const spectrumBar = document.getElementById('spectrum-bar')
+
+// ═══════════════ STATE ═══════════════
+let W, H, dpr
+let time = 0
+let paused = false
+let audioMode = null // 'mic' or 'music'
+let sensitivity = 1.0
+let fps = 60
+let frameCount = 0
+let lastFpsTime = performance.now()
+
+// Audio
+let audioCtx = null
+let analyser = null
+let freqData = null
+let timeData = null
+let source = null
+let micStream = null
+
+// Frequency bands (will be computed from analyser)
+let bass = 0, mid = 0, high = 0, overall = 0
+let prevBass = 0
+let beatDetected = false
+let beatCooldown = 0
+let beatCount = 0
+
+// Stars
+let stars = []
+
+// ═══════════════ TEXT CONTENT ═══════════════
+const paragraphs = [
+  "소리가 문자를 깨운다. 주파수가 글자를 흔들고, 비트가 단어를 폭발시킨다.",
+  "Sound is vibration. Vibration is movement. Movement is life. Every letter breathes with your voice.",
+  "138억 년 전 빅뱅의 메아리가 아직도 우주를 채운다. 우주 배경 복사, 3K의 잔향.",
+  "Every atom in your body was once inside a star. You are the universe experiencing itself.",
+  "말은 공기의 조각이다. 숨을 내쉬면 의미가 된다. 글자는 그 의미의 화석이다.",
+  "Frequencies below 20Hz you can't hear, but you feel them. Bass lives in your chest, not your ears.",
+  "공명: 같은 주파수를 가진 두 물체가 서로를 깨우는 현상. 당신의 목소리가 이 글자들을 깨운다.",
+  "The harmonic series is nature's music theory. Overtones stack like fractals of sound.",
+  "시간은 진동이다. 세슘-133의 진동수가 1초를 정의한다. 9,192,631,770번.",
+  "Cymatics: sound makes matter dance. Sand on a vibrating plate reveals hidden geometry.",
+  "A440. 모든 오케스트라가 맞추는 기준점. 하나의 주파수가 세계를 동기화한다.",
+  "Resonance breaks bridges. Resonance shatters glass. Resonance moves these letters.",
+  "파동은 매질 없이도 전파된다. 빛은 진공을 통과한다. 중력파는 시공을 흔든다.",
+  "Your heartbeat is the first rhythm you ever heard. 60-100 BPM. The tempo of existence.",
+]
+const fullText = paragraphs.join(' ✦ ')
+
+// ═══════════════ CHARS ═══════════════
+let chars = []
+const fontSize = 18
+const lineHeight = 30
+const font = `${fontSize}px Inter, Pretendard, system-ui, sans-serif`
+const padding = 40
+
+function resize() {
+  dpr = window.devicePixelRatio || 1
+  W = window.innerWidth
+  H = window.innerHeight
+  canvas.width = W * dpr
+  canvas.height = H * dpr
+  ctx.scale(dpr, dpr)
+  initStars()
+  buildLines()
+}
+
+function initStars() {
+  stars = []
+  for (let i = 0; i < 120; i++) {
+    stars.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      size: 0.3 + Math.random() * 1.5,
+      twinkleSpeed: 0.5 + Math.random() * 2,
+      twinkleOffset: Math.random() * Math.PI * 2,
+      hue: 200 + Math.random() * 160,
+    })
+  }
+}
+
+function buildLines() {
+  chars = []
+  ctx.font = font
+
+  try {
+    const prepared = prepareWithSegments(fullText, font)
+    let cursor = { segmentIndex: 0, graphemeIndex: 0 }
+    let y = padding + 20
+    let charIndex = 0
+
+    while (y < H - padding - 60) {
+      const maxW = W - padding * 2
+      const line = layoutNextLine(prepared, cursor, maxW)
+      if (line === null) {
+        cursor = { segmentIndex: 0, graphemeIndex: 0 }
+        const line2 = layoutNextLine(prepared, cursor, maxW)
+        if (line2 === null) break
+        charIndex = pushLineChars(line2.text, padding, y, charIndex)
+        cursor = line2.end
+      } else {
+        charIndex = pushLineChars(line.text, padding, y, charIndex)
+        cursor = line.end
+      }
+      y += lineHeight
+    }
+  } catch(e) {
+    // Fallback without pretext
+    let y = padding + 20
+    let textIdx = 0
+    let charIndex = 0
+    while (y < H - padding - 60 && textIdx < fullText.length * 3) {
+      let x = padding
+      const maxW = W - padding * 2
+      while (x < padding + maxW && textIdx < fullText.length * 3) {
+        const ch = fullText[textIdx % fullText.length]
+        const w = ctx.measureText(ch).width
+        if (x + w > padding + maxW) break
+        pushChar(ch, x, y, charIndex++)
+        x += w
+        textIdx++
+      }
+      y += lineHeight
+    }
+  }
+}
+
+function pushLineChars(text, startX, y, charIndex) {
+  let x = startX
+  ctx.font = font
+  for (const ch of [...text]) {
+    const w = ctx.measureText(ch).width
+    pushChar(ch, x, y, charIndex++)
+    x += w
+  }
+  return charIndex
+}
+
+function pushChar(ch, x, y, index) {
+  // Assign each char to a frequency band based on position
+  const totalChars = Math.max(chars.length + 1, 1)
+  const normalizedRow = y / H
+  const normalizedCol = x / W
+
+  chars.push({
+    char: ch,
+    baseX: x,
+    baseY: y,
+    x, y,
+    vx: 0,
+    vy: 0,
+    rotation: 0,
+    scale: 1,
+    opacity: 0.6,
+    index: index,
+    // Frequency assignment: top rows → bass, bottom → high
+    freqBand: normalizedRow < 0.35 ? 'bass' : normalizedRow < 0.7 ? 'mid' : 'high',
+    // Each char has a unique phase offset for wave motion
+    phase: (normalizedCol + normalizedRow * 0.7) * Math.PI * 4,
+    // Color
+    hue: 220,
+    sat: 30,
+    light: 65,
+    // Trail
+    trail: [],
+  })
+}
+
+// ═══════════════ AUDIO ═══════════════
+async function initAudio(mode) {
+  audioMode = mode
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+  analyser = audioCtx.createAnalyser()
+  analyser.fftSize = 1024
+  analyser.smoothingTimeConstant = 0.8
+
+  freqData = new Uint8Array(analyser.frequencyBinCount)
+  timeData = new Uint8Array(analyser.frequencyBinCount)
+
+  if (mode === 'mic') {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      source = audioCtx.createMediaStreamSource(micStream)
+      source.connect(analyser)
+      modeEl.textContent = '🎤 MIC'
+    } catch(e) {
+      // Mic denied → fall back to demo
+      await startDemoMusic()
+    }
+  } else {
+    await startDemoMusic()
+  }
+
+  overlay.classList.add('hidden')
+}
+
+async function startDemoMusic() {
+  audioMode = 'music'
+  modeEl.textContent = '🎵 SYNTH'
+  // Generate procedural music using oscillators
+  startProceduralMusic()
+}
+
+// Procedural music engine — generates ambient electronic music
+let musicNodes = []
+let musicInterval = null
+
+function startProceduralMusic() {
+  if (!audioCtx) return
+
+  const masterGain = audioCtx.createGain()
+  masterGain.gain.value = 0.3
+  masterGain.connect(analyser)
+  analyser.connect(audioCtx.destination)
+
+  // Sub bass drone
+  const subOsc = audioCtx.createOscillator()
+  const subGain = audioCtx.createGain()
+  subOsc.type = 'sine'
+  subOsc.frequency.value = 55 // A1
+  subGain.gain.value = 0.25
+  subOsc.connect(subGain)
+  subGain.connect(masterGain)
+  subOsc.start()
+  musicNodes.push(subOsc, subGain)
+
+  // LFO modulating sub bass
+  const lfo = audioCtx.createOscillator()
+  const lfoGain = audioCtx.createGain()
+  lfo.type = 'sine'
+  lfo.frequency.value = 0.15
+  lfoGain.gain.value = 8
+  lfo.connect(lfoGain)
+  lfoGain.connect(subOsc.frequency)
+  lfo.start()
+  musicNodes.push(lfo, lfoGain)
+
+  // Pad synth (warm)
+  const padOsc1 = audioCtx.createOscillator()
+  const padOsc2 = audioCtx.createOscillator()
+  const padGain = audioCtx.createGain()
+  const padFilter = audioCtx.createBiquadFilter()
+  padOsc1.type = 'sawtooth'
+  padOsc2.type = 'sawtooth'
+  padOsc1.frequency.value = 220
+  padOsc2.frequency.value = 223 // slight detune
+  padGain.gain.value = 0.06
+  padFilter.type = 'lowpass'
+  padFilter.frequency.value = 800
+  padFilter.Q.value = 2
+  padOsc1.connect(padFilter)
+  padOsc2.connect(padFilter)
+  padFilter.connect(padGain)
+  padGain.connect(masterGain)
+  padOsc1.start()
+  padOsc2.start()
+  musicNodes.push(padOsc1, padOsc2, padGain, padFilter)
+
+  // Filter sweep LFO
+  const filterLfo = audioCtx.createOscillator()
+  const filterLfoGain = audioCtx.createGain()
+  filterLfo.type = 'sine'
+  filterLfo.frequency.value = 0.08
+  filterLfoGain.gain.value = 400
+  filterLfo.connect(filterLfoGain)
+  filterLfoGain.connect(padFilter.frequency)
+  filterLfo.start()
+  musicNodes.push(filterLfo, filterLfoGain)
+
+  // Melodic notes (pentatonic scale, triggered rhythmically)
+  const scale = [220, 261.63, 329.63, 392, 440, 523.25, 659.25, 783.99]
+  let noteIndex = 0
+
+  musicInterval = setInterval(() => {
+    if (paused || !audioCtx) return
+
+    const freq = scale[noteIndex % scale.length]
+    noteIndex++
+
+    const osc = audioCtx.createOscillator()
+    const env = audioCtx.createGain()
+    const noteFilter = audioCtx.createBiquadFilter()
+
+    osc.type = Math.random() > 0.5 ? 'triangle' : 'sine'
+    osc.frequency.value = freq * (Math.random() > 0.7 ? 2 : 1)
+
+    noteFilter.type = 'lowpass'
+    noteFilter.frequency.value = 2000 + Math.random() * 2000
+
+    const now = audioCtx.currentTime
+    env.gain.setValueAtTime(0, now)
+    env.gain.linearRampToValueAtTime(0.08 + Math.random() * 0.04, now + 0.05)
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.8 + Math.random() * 1.5)
+
+    osc.connect(noteFilter)
+    noteFilter.connect(env)
+    env.connect(masterGain)
+    osc.start(now)
+    osc.stop(now + 2.5)
+  }, 300 + Math.random() * 200)
+
+  // Kick drum pattern
+  let kickStep = 0
+  const kickInterval = setInterval(() => {
+    if (paused || !audioCtx) return
+    kickStep++
+
+    // 4-on-the-floor with occasional skip
+    if (kickStep % 4 !== 0 && Math.random() > 0.3) return
+
+    const kickOsc = audioCtx.createOscillator()
+    const kickGain = audioCtx.createGain()
+    const now = audioCtx.currentTime
+
+    kickOsc.type = 'sine'
+    kickOsc.frequency.setValueAtTime(150, now)
+    kickOsc.frequency.exponentialRampToValueAtTime(30, now + 0.15)
+
+    kickGain.gain.setValueAtTime(0.4, now)
+    kickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.3)
+
+    kickOsc.connect(kickGain)
+    kickGain.connect(masterGain)
+    kickOsc.start(now)
+    kickOsc.stop(now + 0.4)
+  }, 250)
+
+  musicNodes.push({ stop: () => { clearInterval(musicInterval); clearInterval(kickInterval) } })
+}
+
+function stopMusic() {
+  for (const node of musicNodes) {
+    try { if (node.stop) node.stop() } catch(e) {}
+    try { if (node.disconnect) node.disconnect() } catch(e) {}
+  }
+  musicNodes = []
+  if (musicInterval) clearInterval(musicInterval)
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop())
+    micStream = null
+  }
+}
+
+// ═══════════════ AUDIO ANALYSIS ═══════════════
+function analyzeAudio() {
+  if (!analyser || !freqData) {
+    bass = mid = high = overall = 0
+    return
+  }
+
+  analyser.getByteFrequencyData(freqData)
+  analyser.getByteTimeDomainData(timeData)
+
+  const binCount = freqData.length
+  // Bass: 0-200Hz (bins 0 ~ ~10)
+  // Mid: 200-2000Hz (bins ~10 ~ ~93)
+  // High: 2000-20000Hz (bins ~93+)
+  const bassEnd = Math.floor(binCount * 0.02)
+  const midEnd = Math.floor(binCount * 0.18)
+
+  let bassSum = 0, midSum = 0, highSum = 0
+  for (let i = 0; i < binCount; i++) {
+    const v = freqData[i] / 255
+    if (i < bassEnd) bassSum += v
+    else if (i < midEnd) midSum += v
+    else highSum += v
+  }
+
+  bass = (bassSum / Math.max(bassEnd, 1)) * sensitivity
+  mid = (midSum / Math.max(midEnd - bassEnd, 1)) * sensitivity
+  high = (highSum / Math.max(binCount - midEnd, 1)) * sensitivity
+  overall = (bass * 0.5 + mid * 0.35 + high * 0.15)
+
+  // Beat detection (bass spike)
+  if (beatCooldown > 0) beatCooldown--
+  if (bass > prevBass * 1.4 + 0.15 && bass > 0.3 && beatCooldown <= 0) {
+    beatDetected = true
+    beatCooldown = 10
+    beatCount++
+  } else {
+    beatDetected = false
+  }
+  prevBass = bass
+}
+
+// ═══════════════ PHYSICS ═══════════════
+function updatePhysics() {
+  if (paused) return
+
+  analyzeAudio()
+
+  const friction = 0.88
+  const returnForce = 0.08
+
+  for (const p of chars) {
+    let bandValue = 0
+    let bandHue = 220
+
+    if (p.freqBand === 'bass') {
+      bandValue = bass
+      bandHue = 0 + bass * 40 // red → orange
+    } else if (p.freqBand === 'mid') {
+      bandValue = mid
+      bandHue = 120 + mid * 80 // green → cyan
+    } else {
+      bandValue = high
+      bandHue = 240 + high * 80 // blue → purple
+    }
+
+    // Wave displacement based on frequency
+    const waveAmp = bandValue * 25 * sensitivity
+    const waveFreq = 0.02 + bandValue * 0.01
+    const waveSpeed = 3 + overall * 4
+
+    // Primary wave: vertical displacement synced to audio
+    const wave = Math.sin(p.phase + time * waveSpeed) * waveAmp
+    p.vy += (p.baseY + wave - p.y) * 0.15 - p.vy * 0.1
+
+    // Secondary wave: horizontal ripple
+    const hWave = Math.cos(p.phase * 0.7 + time * waveSpeed * 0.6) * waveAmp * 0.3
+    p.vx += (p.baseX + hWave - p.x) * 0.12 - p.vx * 0.1
+
+    // Beat impulse
+    if (beatDetected) {
+      const angle = p.phase + time
+      const impulse = 6 * bass
+      p.vx += Math.cos(angle) * impulse * (Math.random() - 0.3)
+      p.vy += Math.sin(angle) * impulse * (Math.random() - 0.3)
+    }
+
+    // Spring return
+    p.vx += (p.baseX - p.x) * returnForce * 0.3
+    p.vy += (p.baseY - p.y) * returnForce * 0.3
+
+    // Integrate
+    p.vx *= friction
+    p.vy *= friction
+    p.x += p.vx
+    p.y += p.vy
+
+    // Visual properties driven by audio
+    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
+    p.rotation = Math.atan2(p.vy, p.vx) * Math.min(speed / 8, 0.3)
+    p.scale = 1 + bandValue * 0.5 + (beatDetected ? bass * 0.3 : 0)
+    p.opacity = 0.4 + bandValue * 0.5 + overall * 0.2
+    p.hue = bandHue
+    p.sat = 40 + bandValue * 50
+    p.light = 55 + bandValue * 25
+
+    // Trails for fast chars
+    if (speed > 2 && chars.length < 2000) {
+      p.trail.push({ x: p.x, y: p.y, opacity: 0.25 + bandValue * 0.2 })
+      if (p.trail.length > 4) p.trail.shift()
+    } else {
+      for (const t of p.trail) t.opacity *= 0.8
+      p.trail = p.trail.filter(t => t.opacity > 0.02)
+    }
+  }
+}
+
+// ═══════════════ RENDER ═══════════════
+function render() {
+  ctx.clearRect(0, 0, W, H)
+
+  // Background with audio-reactive glow
+  const bgGrad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H) * 0.7)
+  const bgBrightness = Math.floor(6 + overall * 8)
+  bgGrad.addColorStop(0, `rgb(${bgBrightness + Math.floor(bass * 15)}, ${bgBrightness}, ${bgBrightness + Math.floor(high * 15)})`)
+  bgGrad.addColorStop(1, '#04040a')
+  ctx.fillStyle = bgGrad
+  ctx.fillRect(0, 0, W, H)
+
+  // Stars react to audio
+  for (const s of stars) {
+    const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(time * s.twinkleSpeed + s.twinkleOffset))
+    const audioBoost = 1 + overall * 2
+    ctx.beginPath()
+    ctx.arc(s.x, s.y, s.size * audioBoost, 0, Math.PI * 2)
+    ctx.fillStyle = `hsla(${s.hue + overall * 60}, 50%, 80%, ${twinkle * (0.2 + overall * 0.3)})`
+    ctx.fill()
+  }
+
+  // Frequency band zone indicators (subtle horizontal lines)
+  if (overall > 0.05) {
+    const zones = [
+      { y: H * 0.35, color: `rgba(255, 80, 60, ${bass * 0.08})`, label: 'BASS' },
+      { y: H * 0.7, color: `rgba(80, 255, 150, ${mid * 0.06})`, label: 'MID' },
+    ]
+    for (const z of zones) {
+      ctx.beginPath()
+      ctx.moveTo(padding, z.y)
+      ctx.lineTo(W - padding, z.y)
+      ctx.strokeStyle = z.color
+      ctx.lineWidth = 0.5
+      ctx.setLineDash([4, 8])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+  }
+
+  // Beat flash
+  if (beatDetected) {
+    ctx.fillStyle = `rgba(255, 255, 255, ${bass * 0.06})`
+    ctx.fillRect(0, 0, W, H)
+  }
+
+  // Waveform visualization at center (subtle)
+  if (timeData && overall > 0.02) {
+    ctx.beginPath()
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.04 + overall * 0.06})`
+    ctx.lineWidth = 1
+    const sliceW = W / timeData.length
+    for (let i = 0; i < timeData.length; i++) {
+      const v = timeData[i] / 128.0
+      const waveY = H / 2 + (v - 1) * H * 0.15 * sensitivity
+      if (i === 0) ctx.moveTo(0, waveY)
+      else ctx.lineTo(i * sliceW, waveY)
+    }
+    ctx.stroke()
+  }
+
+  // Trails
+  ctx.font = font
+  ctx.textBaseline = 'top'
+  for (const p of chars) {
+    for (const t of p.trail) {
+      ctx.globalAlpha = t.opacity * 0.3
+      ctx.fillStyle = `hsla(${p.hue}, ${p.sat}%, ${p.light}%, 1)`
+      ctx.fillText(p.char, t.x, t.y)
+    }
+  }
+  ctx.globalAlpha = 1
+
+  // Characters
+  for (const p of chars) {
+    ctx.save()
+    ctx.translate(p.x, p.y)
+    ctx.rotate(p.rotation)
+    ctx.scale(p.scale, p.scale)
+    ctx.fillStyle = `hsla(${p.hue}, ${p.sat}%, ${p.light}%, ${p.opacity})`
+    ctx.fillText(p.char, 0, 0)
+    ctx.restore()
+  }
+
+  // Spectrum bar at bottom
+  if (freqData && overall > 0.01) {
+    const barW = Math.min(W * 0.9, 600)
+    const barH = 40
+    const barX = (W - barW) / 2
+    const barY = H - 80
+    const binCount = Math.min(freqData.length, 128)
+    const binW = barW / binCount
+
+    for (let i = 0; i < binCount; i++) {
+      const v = freqData[i] / 255
+      const h = v * barH
+      const hue = (i / binCount) * 300
+      ctx.fillStyle = `hsla(${hue}, 70%, ${50 + v * 30}%, ${0.3 + v * 0.5})`
+      ctx.fillRect(barX + i * binW, barY + barH - h, binW - 0.5, h)
+    }
+  }
+
+  // Beat counter / ring effect
+  if (beatDetected) {
+    ctx.beginPath()
+    ctx.arc(W/2, H/2, 50 + bass * 200, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 200, 100, ${bass * 0.15})`
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
+
+  // Time
+  time += 0.016
+
+  // FPS counter
+  frameCount++
+  const now = performance.now()
+  if (now - lastFpsTime > 500) {
+    fps = Math.round(frameCount / ((now - lastFpsTime) / 1000))
+    frameCount = 0
+    lastFpsTime = now
+    statsEl.innerHTML = `${chars.length} chars · ${fps} fps<br>bass ${(bass * 100).toFixed(0)}% · mid ${(mid * 100).toFixed(0)}% · hi ${(high * 100).toFixed(0)}%<br>beats: ${beatCount} · sens: ${sensitivity.toFixed(1)}x`
+  }
+}
+
+// ═══════════════ LOOP ═══════════════
+function loop() {
+  updatePhysics()
+  render()
+  requestAnimationFrame(loop)
+}
+
+// ═══════════════ EVENTS ═══════════════
+document.getElementById('btn-mic').addEventListener('click', () => initAudio('mic'))
+document.getElementById('btn-music').addEventListener('click', () => initAudio('music'))
+
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') {
+    e.preventDefault()
+    paused = !paused
+    if (paused && audioCtx) audioCtx.suspend()
+    if (!paused && audioCtx) audioCtx.resume()
+  }
+  if (e.key === 'm' || e.key === 'M') {
+    // Toggle mic/music
+    stopMusic()
+    initAudio(audioMode === 'mic' ? 'music' : 'mic')
+  }
+  if (e.key === 'r' || e.key === 'R') {
+    for (const p of chars) {
+      p.x = p.baseX
+      p.y = p.baseY
+      p.vx = 0
+      p.vy = 0
+      p.rotation = 0
+      p.scale = 1
+      p.trail = []
+    }
+    beatCount = 0
+  }
+  if (e.key === 'ArrowRight') {
+    sensitivity = Math.min(3.0, sensitivity + 0.1)
+  }
+  if (e.key === 'ArrowLeft') {
+    sensitivity = Math.max(0.2, sensitivity - 0.1)
+  }
+  // Presets
+  if (e.key === '1') sensitivity = 0.5
+  if (e.key === '2') sensitivity = 1.0
+  if (e.key === '3') sensitivity = 2.0
+})
+
+window.addEventListener('resize', resize)
+
+// Touch support
+window.addEventListener('touchstart', e => {
+  if (overlay.classList.contains('hidden')) {
+    // Double tap to toggle pause
+    e.preventDefault()
+  }
+})
+
+// ═══════════════ INIT ═══════════════
+let pretextLoaded = false
+try {
+  const testP = prepareWithSegments('test', font)
+  const testL = layoutNextLine(testP, { segmentIndex: 0, graphemeIndex: 0 }, 200)
+  if (testL && testL.text) pretextLoaded = true
+} catch(e) {
+  pretextLoaded = false
+}
+
+resize()
+loop()
+
+// Status indicator
+const statusEl = document.createElement('div')
+statusEl.style.cssText = 'position:fixed;bottom:48px;left:16px;font:10px monospace;z-index:20;opacity:0.25;'
+statusEl.textContent = pretextLoaded ? '✓ pretext' : '⚠ fallback'
+statusEl.style.color = pretextLoaded ? 'rgba(100,255,150,0.5)' : 'rgba(255,150,100,0.5)'
+document.body.appendChild(statusEl)
+</script>
+</body>
+</html>
