@@ -127,6 +127,45 @@
     color: rgba(255,255,255,0.6);
     line-height: 1.6;
   }
+  /* Mobile control bar */
+  #mobile-controls {
+    display: none;
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 25;
+    gap: 8px;
+    justify-content: center;
+  }
+  @media (max-width: 768px), (pointer: coarse) {
+    #mobile-controls { display: flex; }
+  }
+  .ctrl-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+    color: rgba(255,255,255,0.5);
+    font-size: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .ctrl-btn:active {
+    background: rgba(255,255,255,0.15);
+    transform: scale(0.9);
+  }
+  .ctrl-btn.active {
+    border-color: rgba(100,200,255,0.4);
+    color: rgba(100,200,255,0.8);
+    background: rgba(100,200,255,0.08);
+  }
   @keyframes beat-ring {
     0% { transform: translate(-50%, -50%) scale(0.2); opacity: 0.9; }
     100% { transform: translate(-50%, -50%) scale(3); opacity: 0; }
@@ -169,6 +208,13 @@
 
 <canvas id="c"></canvas>
 <div id="mode-indicator"></div>
+<div id="mobile-controls">
+  <button class="ctrl-btn" id="mc-mode" title="Toggle mic/music">M</button>
+  <button class="ctrl-btn" id="mc-cymatics" title="Cymatics mode">C</button>
+  <button class="ctrl-btn" id="mc-sens-down" title="Sensitivity down">-</button>
+  <button class="ctrl-btn" id="mc-sens-up" title="Sensitivity up">+</button>
+  <button class="ctrl-btn" id="mc-reset" title="Reset">R</button>
+</div>
 <div id="stats"></div>
 <div id="info">
   click=ripple · move=lens · space=pause · M=source · C=cymatics · ←→ sens · +/- vol · R=reset<br>
@@ -851,9 +897,18 @@ function updatePhysics() {
     // === Beat impulse ===
     if (beatDetected) {
       const angle = p.phase + time * 0.5
-      const impulse = 5 * bass
+      const impulse = 5 * bass * (1 + buildupIntensity * 2)
       p.vx += Math.cos(angle) * impulse * (Math.random() - 0.2)
       p.vy += Math.sin(angle) * impulse * (Math.random() - 0.2)
+    }
+
+    // === Drop effect — chars burst outward on energy release ===
+    if (dropEffect > 0.15) {
+      const dcx = p.x - W/2, dcy = p.y - H/2
+      const dDist = Math.sqrt(dcx * dcx + dcy * dcy) || 1
+      const dropForce = dropEffect * 12
+      p.vx += (dcx / dDist) * dropForce * (0.5 + Math.random() * 0.5)
+      p.vy += (dcy / dDist) * dropForce * (0.5 + Math.random() * 0.5)
     }
 
     // Spring return
@@ -879,7 +934,7 @@ function updatePhysics() {
     p.rotation = Math.atan2(p.vy, p.vx) * Math.min(speed / 10, 0.25)
     p.scale = 1 + bandValue * 0.4 + (beatDetected ? bass * 0.25 : 0) + p.highlight * 0.3 + buildupIntensity * 0.15
     // Idle breathing opacity so text is readable without audio
-    const idleOpacity = 0.5 + Math.sin(p.phase * 0.15 + time * 0.6) * 0.05
+    const idleOpacity = 0.6 + Math.sin(p.phase * 0.15 + time * 0.6) * 0.06
     p.opacity = idleOpacity + bandValue * 0.4 + overall * 0.15 + p.highlight * 0.35
     p.hue = bandHue + p.highlight * 40
     p.sat = 35 + bandValue * 55 + p.highlight * 20
@@ -991,18 +1046,27 @@ function render() {
     ctx.fill()
   }
 
-  // Waveform (subtle, horizontal center line)
+  // Circular waveform (orbiting the spectrum ring)
   if (timeData && overall > 0.02) {
+    const wcx = W / 2, wcy = H / 2
+    const wBaseR = Math.min(W, H) * 0.22
+    const wSamples = 128
+    const wStep = Math.PI * 2 / wSamples
     ctx.beginPath()
-    ctx.strokeStyle = 'rgba(255, 255, 255, ' + (0.03 + overall * 0.04) + ')'
-    ctx.lineWidth = 0.8
-    const sliceW = W / timeData.length
-    for (let i = 0; i < timeData.length; i++) {
-      const v = timeData[i] / 128.0
-      const wY = H / 2 + (v - 1) * H * 0.1 * sensitivity
-      if (i === 0) ctx.moveTo(0, wY)
-      else ctx.lineTo(i * sliceW, wY)
+    for (let i = 0; i <= wSamples; i++) {
+      const idx = Math.floor((i % wSamples) / wSamples * timeData.length)
+      const v = (timeData[idx] / 128.0 - 1) * sensitivity
+      const r = wBaseR + v * 40 * (1 + overall * 2)
+      const angle = i * wStep - Math.PI / 2 + time * 0.2
+      const px = wcx + Math.cos(angle) * r
+      const py = wcy + Math.sin(angle) * r
+      if (i === 0) ctx.moveTo(px, py)
+      else ctx.lineTo(px, py)
     }
+    ctx.closePath()
+    const wAlpha = 0.04 + overall * 0.06 + dropEffect * 0.1
+    ctx.strokeStyle = 'hsla(' + (200 + smoothBass * 60) + ', 50%, 60%, ' + wAlpha + ')'
+    ctx.lineWidth = 0.8 + overall * 0.6
     ctx.stroke()
   }
 
@@ -1012,15 +1076,36 @@ function render() {
     ctx.fillRect(0, 0, W, H)
   }
 
-  // Drop effect — expanding flash when buildup releases
+  // Drop effect — expanding flash + shockwave when buildup releases
   if (dropEffect > 0.05) {
-    ctx.fillStyle = 'rgba(255, 255, 255, ' + (dropEffect * 0.08) + ')'
+    // Screen flash (color shifts with buildup)
+    const dropHue = 30 + beatCount * 20
+    ctx.fillStyle = 'hsla(' + (dropHue % 360) + ', 60%, 70%, ' + (dropEffect * 0.1) + ')'
     ctx.fillRect(0, 0, W, H)
-    ctx.beginPath()
-    ctx.arc(W/2, H/2, dropEffect * Math.max(W, H) * 0.4, 0, Math.PI * 2)
-    ctx.strokeStyle = 'rgba(255, 220, 150, ' + (dropEffect * 0.15) + ')'
-    ctx.lineWidth = 2 + dropEffect * 3
-    ctx.stroke()
+    // Expanding shockwave rings
+    for (let dr = 0; dr < 3; dr++) {
+      const ringR = dropEffect * Math.max(W, H) * (0.2 + dr * 0.15)
+      ctx.beginPath()
+      ctx.arc(W/2, H/2, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = 'hsla(' + ((dropHue + dr * 40) % 360) + ', 70%, 60%, ' + (dropEffect * 0.12 / (dr + 1)) + ')'
+      ctx.lineWidth = 3 + dropEffect * 4 - dr * 1.5
+      ctx.stroke()
+    }
+    // Radial burst lines
+    if (dropEffect > 0.2) {
+      const burstLines = 12
+      for (let bl = 0; bl < burstLines; bl++) {
+        const bAngle = (bl / burstLines) * Math.PI * 2 + time
+        const innerR = dropEffect * Math.max(W, H) * 0.1
+        const outerR = dropEffect * Math.max(W, H) * 0.45
+        ctx.beginPath()
+        ctx.moveTo(W/2 + Math.cos(bAngle) * innerR, H/2 + Math.sin(bAngle) * innerR)
+        ctx.lineTo(W/2 + Math.cos(bAngle) * outerR, H/2 + Math.sin(bAngle) * outerR)
+        ctx.strokeStyle = 'rgba(255, 220, 150, ' + (dropEffect * 0.08) + ')'
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+    }
   }
 
   // Aurora sweep — subtle color bands that shift with audio
@@ -1334,6 +1419,37 @@ window.addEventListener('touchmove', e => {
 }, { passive: false })
 
 window.addEventListener('touchend', () => { initialPinchDist = null })
+
+// Mobile controls
+const mcCymaticsBtn = document.getElementById('mc-cymatics')
+document.getElementById('mc-mode')?.addEventListener('click', e => {
+  e.stopPropagation()
+  stopMusic()
+  initAudio(audioMode === 'mic' ? 'music' : 'mic')
+})
+mcCymaticsBtn?.addEventListener('click', e => {
+  e.stopPropagation()
+  cymaticsMode = !cymaticsMode
+  mcCymaticsBtn.classList.toggle('active', cymaticsMode)
+})
+document.getElementById('mc-sens-down')?.addEventListener('click', e => {
+  e.stopPropagation()
+  sensitivity = Math.max(0.2, sensitivity - 0.2)
+})
+document.getElementById('mc-sens-up')?.addEventListener('click', e => {
+  e.stopPropagation()
+  sensitivity = Math.min(3.0, sensitivity + 0.2)
+})
+document.getElementById('mc-reset')?.addEventListener('click', e => {
+  e.stopPropagation()
+  for (const p of chars) {
+    p.x = p.baseX; p.y = p.baseY
+    p.vx = 0; p.vy = 0
+    p.rotation = 0; p.scale = 1; p.trail = []
+  }
+  beatCount = 0
+  ripples = []
+})
 
 // ═══════════════ INIT ═══════════════
 let pretextLoaded = false
