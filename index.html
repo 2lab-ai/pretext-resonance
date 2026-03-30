@@ -284,6 +284,31 @@ let buildupIntensity = 0
 let volume = 0.35 // master volume
 let dropEffect = 0 // flash when buildup drops suddenly
 
+// Particles (spawned on beats, mouse clicks, drops)
+let particles = []
+const MAX_PARTICLES = 200
+
+function spawnParticles(x, y, count, hue, speed, life) {
+  for (let i = 0; i < count && particles.length < MAX_PARTICLES; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const spd = speed * (0.3 + Math.random() * 0.7)
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd,
+      life: life * (0.5 + Math.random() * 0.5),
+      maxLife: life,
+      hue: hue + Math.random() * 30 - 15,
+      size: 1 + Math.random() * 2
+    })
+  }
+}
+
+// Music evolution stage
+let musicStage = 0
+let musicTime = 0
+let stageTransition = 0
+
 // Stars
 let stars = []
 
@@ -573,6 +598,12 @@ function startDemoMusic() {
     // Update sub bass root
     const roots = [55, 49, 43.65, 49]
     subOsc.frequency.setTargetAtTime(roots[chordIdx], audioCtx.currentTime, 0.3)
+    // Music evolution: open filter and increase reverb over time
+    const stage = Math.min(3, Math.floor(musicTime / 30))
+    const filterTarget = 600 + stage * 400
+    padFilter.frequency.setTargetAtTime(filterTarget, audioCtx.currentTime, 1.0)
+    reverbGain.gain.setTargetAtTime(0.15 + stage * 0.08, audioCtx.currentTime, 0.5)
+    padGain.gain.setTargetAtTime(0.04 + stage * 0.012, audioCtx.currentTime, 0.5)
   }, 4000)
   musicIntervals.push(chordInterval)
 
@@ -725,6 +756,9 @@ function analyzeAudio() {
     beatCount++
     // Create beat ring
     createBeatRing()
+    // Spawn particles on beat
+    const beatHue = Math.random() * 360
+    spawnParticles(W/2, H/2, 6 + Math.floor(bass * 12), beatHue, 2 + bass * 4, 40 + bass * 30)
     // Highlight a random word group
     const maxGroup = currentWordGroup || paragraphs.length
     highlightGroup = Math.floor(Math.random() * maxGroup)
@@ -747,6 +781,8 @@ function analyzeAudio() {
       // Drop detection: was building, now falling
       if (buildupIntensity > 0.3 && delta < -0.02) {
         dropEffect = buildupIntensity
+        // Drop → massive particle burst
+        spawnParticles(W/2, H/2, 20 + Math.floor(buildupIntensity * 30), 30, 5 + buildupIntensity * 8, 60)
       }
       buildupIntensity *= 0.95
     }
@@ -773,6 +809,7 @@ function createClickRipple(x, y) {
   el.style.background = 'radial-gradient(circle, rgba(255,200,100,0.3) 0%, transparent 70%)'
   document.body.appendChild(el)
   ripples.push({ x, y, time: time, strength: 1 })
+  spawnParticles(x, y, 8 + Math.floor(overall * 10), 40 + overall * 200, 2 + overall * 3, 35)
   setTimeout(() => el.remove(), 700)
 }
 
@@ -952,6 +989,27 @@ function updatePhysics() {
 
   // Decay highlight
   highlightDecay *= 0.96
+
+  // Update particles
+  for (let pi = particles.length - 1; pi >= 0; pi--) {
+    const pt = particles[pi]
+    pt.x += pt.vx
+    pt.y += pt.vy
+    pt.vx *= 0.97
+    pt.vy *= 0.97
+    pt.vy += 0.02 // slight gravity
+    pt.life--
+    if (pt.life <= 0) particles.splice(pi, 1)
+  }
+
+  // Music evolution — advance stage every 30 seconds
+  musicTime += 0.016
+  const newStage = Math.min(3, Math.floor(musicTime / 30))
+  if (newStage !== musicStage) {
+    musicStage = newStage
+    stageTransition = 1.0
+  }
+  if (stageTransition > 0) stageTransition *= 0.98
 }
 
 // ═══════════════ RENDER ═══════════════
@@ -968,7 +1026,8 @@ function render() {
     const ay = H * (0.25 + 0.35 * Math.cos(aPhase * 0.5 + ai * 1.3))
     const ar = Math.min(W, H) * (0.2 + overall * 0.12 + buildupIntensity * 0.08)
     const aGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, ar)
-    const aHues = [280 + smoothBass * 40, 180 + smoothMid * 30, 340 + smoothHigh * 30]
+    const stageHueShift = musicStage * 45
+    const aHues = [280 + smoothBass * 40 + stageHueShift, 180 + smoothMid * 30 + stageHueShift, 340 + smoothHigh * 30 + stageHueShift]
     const aAlpha = 0.012 + overall * 0.01 + buildupIntensity * 0.006
     aGrad.addColorStop(0, 'hsla(' + aHues[ai] + ', 55%, 28%, ' + aAlpha + ')')
     aGrad.addColorStop(0.6, 'hsla(' + (aHues[ai] + 30) + ', 35%, 18%, ' + (aAlpha * 0.3) + ')')
@@ -1108,6 +1167,13 @@ function render() {
     }
   }
 
+  // Stage transition flash
+  if (stageTransition > 0.01) {
+    const stHue = musicStage * 90
+    ctx.fillStyle = 'hsla(' + stHue + ', 50%, 50%, ' + (stageTransition * 0.06) + ')'
+    ctx.fillRect(0, 0, W, H)
+  }
+
   // Aurora sweep — subtle color bands that shift with audio
   if (overall > 0.05) {
     const auroraHue = (time * 20 + beatCount * 30) % 360
@@ -1202,6 +1268,23 @@ function render() {
     ctx.restore()
   }
 
+  // Particles
+  for (const pt of particles) {
+    const pAlpha = (pt.life / pt.maxLife) * 0.7
+    const pSize = pt.size * (pt.life / pt.maxLife)
+    ctx.beginPath()
+    ctx.arc(pt.x, pt.y, pSize, 0, Math.PI * 2)
+    ctx.fillStyle = 'hsla(' + pt.hue + ', 70%, 65%, ' + pAlpha + ')'
+    ctx.fill()
+    // Soft glow for larger particles
+    if (pSize > 1.5) {
+      ctx.beginPath()
+      ctx.arc(pt.x, pt.y, pSize * 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = 'hsla(' + pt.hue + ', 60%, 55%, ' + (pAlpha * 0.15) + ')'
+      ctx.fill()
+    }
+  }
+
   // Mouse cursor visualization
   if (mouseActive) {
     const cursorPulse = 3 + Math.sin(time * 3) * 0.5 + overall * 2
@@ -1285,7 +1368,8 @@ function render() {
     fps = Math.round(frameCount / ((now - lastFpsTime) / 1000))
     frameCount = 0
     lastFpsTime = now
-    statsEl.innerHTML = chars.length + ' chars · ' + fps + ' fps<br>beats: ' + beatCount + ' · sens: ' + sensitivity.toFixed(1) + 'x · vol: ' + Math.round(volume * 100) + '%' + (buildupIntensity > 0.1 ? '<br>▲ buildup ' + Math.round(buildupIntensity * 100) + '%' : '') + (cymaticsMode ? '<br>⬡ CYMATICS' : '')
+    const stageNames = ['I · dawn', 'II · rise', 'III · peak', 'IV · transcend']
+    statsEl.innerHTML = chars.length + ' chars · ' + fps + ' fps · ' + particles.length + ' pt<br>beats: ' + beatCount + ' · sens: ' + sensitivity.toFixed(1) + 'x · vol: ' + Math.round(volume * 100) + '%<br>stage: ' + stageNames[musicStage] + (buildupIntensity > 0.1 ? ' · ▲' + Math.round(buildupIntensity * 100) + '%' : '') + (cymaticsMode ? ' · ⬡ CYM' : '')
   }
 }
 
