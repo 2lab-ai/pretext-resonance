@@ -437,16 +437,20 @@ function pushChar(ch, x, y, index) {
     lastCharWasStar = false
   }
   chars.push({
-    char: ch, baseX: x, baseY: y, x, y,
+    char: ch, origChar: ch, baseX: x, baseY: y,
+    x, y: y - 40 - Math.random() * 60, // start above for entrance
     vx: 0, vy: 0,
-    rotation: 0, scale: 1, opacity: 0.5,
+    rotation: 0, scale: 1, opacity: 0,
     index: index,
     wordGroup: currentWordGroup,
     freqBand: nRow < 0.35 ? 'bass' : nRow < 0.68 ? 'mid' : 'high',
     phase: (nCol + nRow * 0.7) * Math.PI * 4,
     hue: 220, sat: 30, light: 60,
     trail: [],
-    highlight: 0, // beat highlight intensity
+    highlight: 0,
+    entranceDelay: index * 0.008, // staggered entrance
+    entered: false,
+    glitchTimer: 0, // for beat glitch symbol swap
   })
 }
 
@@ -841,7 +845,25 @@ function updatePhysics() {
   const friction = 0.87
   const returnForce = 0.07
 
+  const glitchSymbols = '✦★●▲◆◇○△▽♦♢⬡⬢◎⊙⊕⊗'
+
   for (const p of chars) {
+    // Entrance animation — chars fall into place
+    if (!p.entered) {
+      if (time > p.entranceDelay) {
+        p.entered = true
+        p.opacity = 0.6
+      } else {
+        continue // skip physics until entrance time
+      }
+    }
+
+    // Beat glitch — swap char to symbol temporarily
+    if (p.glitchTimer > 0) {
+      p.glitchTimer--
+      if (p.glitchTimer <= 0) p.char = p.origChar
+    }
+
     let bandValue = 0, bandHue = 220
 
     if (p.freqBand === 'bass') {
@@ -937,6 +959,11 @@ function updatePhysics() {
       const impulse = 5 * bass * (1 + buildupIntensity * 2)
       p.vx += Math.cos(angle) * impulse * (Math.random() - 0.2)
       p.vy += Math.sin(angle) * impulse * (Math.random() - 0.2)
+      // Glitch: random chars swap to symbols on strong beats
+      if (bass > 0.5 && Math.random() < 0.08 + buildupIntensity * 0.12) {
+        p.char = glitchSymbols[Math.floor(Math.random() * glitchSymbols.length)]
+        p.glitchTimer = 5 + Math.floor(Math.random() * 10)
+      }
     }
 
     // === Drop effect — chars burst outward on energy release ===
